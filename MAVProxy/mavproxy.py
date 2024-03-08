@@ -1024,7 +1024,7 @@ def send_heartbeat(master):
         MAV_AUTOPILOT_NONE = 4
         master.mav.heartbeat_send(MAV_GROUND, MAV_AUTOPILOT_NONE)
 
-def periodic_tasks():
+def periodic_tasks(_event: threading.Event):
     '''run periodic checks'''
     if mpstate.status.setup_mode:
         return
@@ -1050,6 +1050,10 @@ def periodic_tasks():
     # call optional module idle tasks. These are called at several hundred Hz
     for (m,pm) in mpstate.modules:
         if hasattr(m, 'idle_task'):
+            if m.name == "joystick":
+                _event.set()
+                continue
+
             try:
                 m.idle_task()
             except Exception as msg:
@@ -1062,7 +1066,8 @@ def periodic_tasks():
         if m.needs_unloading:
             mpstate.unload_module(m.name)
 
-def main_loop():
+
+def main_loop(jevent):
     '''main processing loop'''
 
     global screensaver_cookie
@@ -1106,7 +1111,7 @@ def main_loop():
                 if master.port.inWaiting() > 0:
                     process_master(master)
 
-        periodic_tasks()
+        periodic_tasks(jevent)
 
         rin = []
         for master in mpstate.mav_master:
@@ -1167,7 +1172,6 @@ def main_loop():
                         print(msg)
                     # on an exception, remove it from the select list
                     mpstate.select_extra.pop(fd)
-
 
 
 def input_loop():
@@ -1521,9 +1525,14 @@ if __name__ == '__main__':
         print("Note: Not saving telemetry logs")
 
     # run main loop as a thread
-    mpstate.status.thread = threading.Thread(target=main_loop, name='main_loop')
+    joy_event = threading.Event()
+    mpstate.status.thread = threading.Thread(target=main_loop, name='main_loop', args=(joy_event,))
     mpstate.status.thread.daemon = True
     mpstate.status.thread.start()
+
+    mpstate.status.thread_input = threading.Thread(target=input_loop, name='input_loop')
+    mpstate.status.thread_input.daemon = True
+    mpstate.status.thread_input.start()
 
     # use main program for input. This ensures the terminal cleans
     # up on exit
@@ -1532,7 +1541,23 @@ if __name__ == '__main__':
             if opts.daemon or opts.non_interactive:
                 time.sleep(0.1)
             else:
-                input_loop()
+                if joy_event.is_set():
+                    joy_event.clear()
+                    for (m, pm) in mpstate.modules:
+                        if m.name in ["joystick"]:
+                            if hasattr(m, 'idle_task'):
+                                try:
+                                    m.idle_task()
+                                except Exception as msg:
+                                    if mpstate.settings.moddebug == 1:
+                                        print(msg)
+                                    elif mpstate.settings.moddebug > 1:
+                                        print(get_exception_stacktrace(msg))
+
+                            # also see if the module should be unloaded:
+                            if m.needs_unloading:
+                                mpstate.unload_module(m.name)
+
         except KeyboardInterrupt:
             if mpstate.settings.requireexit:
                 print("Interrupt caught.  Use 'exit' to quit MAVProxy.")
