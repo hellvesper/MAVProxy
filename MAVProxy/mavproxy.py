@@ -1530,9 +1530,10 @@ if __name__ == '__main__':
     mpstate.status.thread.daemon = True
     mpstate.status.thread.start()
 
-    mpstate.status.thread_input = threading.Thread(target=input_loop, name='input_loop')
-    mpstate.status.thread_input.daemon = True
-    mpstate.status.thread_input.start()
+    if not opts.daemon or not opts.non_interactive:
+        mpstate.status.thread_input = threading.Thread(target=input_loop, name='input_loop')
+        mpstate.status.thread_input.daemon = True
+        mpstate.status.thread_input.start()
 
     # use main program for input. This ensures the terminal cleans
     # up on exit
