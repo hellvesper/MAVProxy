@@ -1541,23 +1541,22 @@ if __name__ == '__main__':
         try:
             if opts.daemon or opts.non_interactive:
                 time.sleep(0.1)
-            else:
-                if joy_event.is_set():
-                    joy_event.clear()
-                    for (m, pm) in mpstate.modules:
-                        if m.name in ["joystick"]:
-                            if hasattr(m, 'idle_task'):
-                                try:
-                                    m.idle_task()
-                                except Exception as msg:
-                                    if mpstate.settings.moddebug == 1:
-                                        print(msg)
-                                    elif mpstate.settings.moddebug > 1:
-                                        print(get_exception_stacktrace(msg))
+                continue
+            if joy_event.is_set():
+                joy_event.clear()
+                for (m, pm) in mpstate.modules:
+                    if m.name in ["joystick"] and hasattr(m, 'idle_task'):
+                        try:
+                            m.idle_task()
+                        except Exception as msg:
+                            if mpstate.settings.moddebug == 1:
+                                print(msg)
+                            elif mpstate.settings.moddebug > 1:
+                                print(get_exception_stacktrace(msg))
 
-                            # also see if the module should be unloaded:
-                            if m.needs_unloading:
-                                mpstate.unload_module(m.name)
+                        # also see if the module should be unloaded:
+                        if m.needs_unloading:
+                            mpstate.unload_module(m.name)
 
         except KeyboardInterrupt:
             if mpstate.settings.requireexit:
