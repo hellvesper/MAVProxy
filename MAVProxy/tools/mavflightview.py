@@ -287,12 +287,21 @@ def mavflightview_mav(mlog, options=None, flightmode_selections=[]):
             types.extend(['AHR2', 'AHRS2', 'GPS'])
 
     # handle forms like GPS[0], mapping to GPS for recv_match_types
-    for i in range(len(types)):
-        bracket = types[i].find('[')
-        if bracket != -1:
-            types[i] = types[i][:bracket]
 
+    # it may be possible to pass conditions in to recv_match_types,
+    # but for now we filter to desired instances later.
+    want_instances = {}
     recv_match_types = types[:]
+    for i in range(len(recv_match_types)):
+        match = re.match('(?P<name>.*)\[(?P<instancenum>[^\]+])\]', recv_match_types[i])
+        if match is not None:
+            name = match.group("name")
+            number = match.group("instancenum")
+            if name not in want_instances:
+                want_instances[name] = set()
+            want_instances[name].add(number)
+            recv_match_types[i] = name
+
     colour_source = getattr(options, "colour_source")
     re_caps = re.compile('[A-Z_][A-Z0-9_]+')
 
@@ -365,17 +374,29 @@ def mavflightview_mav(mlog, options=None, flightmode_selections=[]):
                 except Exception:
                     pass
             continue
+
         if not mlog.check_condition(options.condition):
             continue
         if options.mode is not None and mlog.flightmode.lower() != options.mode.lower():
             continue
 
-        if not type in types:
+        if not type in types and type not in want_instances:
             # may only be present for colour-source expressions to work
             continue
 
-        if type in ['GPS','VEH'] and hasattr(m,'I'):
-            type = '%s[%u]' % (type, m.I)
+        type_with_instance = type
+        try:
+            # remember that "m" here might be a mavlink message.
+            instance_field = m.fmt.instance_field
+            m_instance_field_value = eval(f"m.{instance_field}")
+            if (type in want_instances and
+                str(m_instance_field_value) not in want_instances[type]
+                ):
+                continue
+
+            type_with_instance = '%s[%u]' % (type, m_instance_field_value)
+        except Exception:
+            pass
 
         if not all_false and len(flightmode_selections) > 0 and idx < len(options._flightmodes) and m._timestamp >= options._flightmodes[idx][2]:
             idx += 1
@@ -453,11 +474,11 @@ def mavflightview_mav(mlog, options=None, flightmode_selections=[]):
                 continue
 
             # automatically add new types to instances
-            if type not in instances:
-                instances[type] = len(instances)
+            if type_with_instance not in instances:
+                instances[type_with_instance] = len(instances)
                 while len(instances) >= len(path):
                     path.append([])
-            instance = instances[type]
+            instance = instances[type_with_instance]
 
             # only plot thing we have a valid-looking location for:
             if abs(lat)<=0.01 and abs(lng)<=0.01:
@@ -470,8 +491,8 @@ def mavflightview_mav(mlog, options=None, flightmode_selections=[]):
             tdays = grapher.timestamp_to_days(m._timestamp)
             point = (lat, lng, colour, tdays)
 
-            if options.rate == 0 or not type in last_timestamps or m._timestamp - last_timestamps[type] > 1.0/options.rate:
-                last_timestamps[type] = m._timestamp
+            if options.rate == 0 or not type_with_instance in last_timestamps or m._timestamp - last_timestamps[type_with_instance] > 1.0/options.rate:
+                last_timestamps[type_with_instance] = m._timestamp
                 path[instance].append(point)
     if len(path[0]) == 0:
         print("No points to plot")

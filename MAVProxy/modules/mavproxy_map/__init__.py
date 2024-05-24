@@ -8,6 +8,7 @@ June 2012
 import sys, os, math
 import functools
 import time
+import datetime
 from MAVProxy.modules.lib import mp_util
 from MAVProxy.modules.lib import mp_settings
 from MAVProxy.modules.lib import mp_module
@@ -59,6 +60,7 @@ class MapModule(mp_module.MPModule):
               ('loitercircle',bool, False),
               ('showclicktime',int, 2),
               ('showwpnum',bool, True),
+              ('circle_linewidth', int, 1),
               ('showdirection', bool, False),
               ('setpos_accuracy', float, 50),
               ('font_size', float, 0.5) ])
@@ -87,21 +89,30 @@ class MapModule(mp_module.MPModule):
                                                                 'zoom',
                                                                 'center',
                                                                 'follow',
+                                                                'menu',
+                                                                'marker',
                                                                 'clear'])
         self.add_completion_function('(MAPSETTING)', self.map_settings.completion)
 
         self.default_popup = MPMenuSubMenu('Popup', items=[])
         self.add_menu(MPMenuItem('Fly To', 'Fly To', '# guided ',
-                                 handler=MPMenuCallTextDialog(title='Altitude (m)', default=self.mpstate.settings.guidedalt)))
-        self.add_menu(MPMenuItem('Set Home', 'Set Home', '# confirm "Set HOME?" map sethomepos '))
-        self.add_menu(MPMenuItem('Set Home (with height)', 'Set Home', '# confirm "Set HOME with height?" map sethome '))
-        self.add_menu(MPMenuItem('Set Origin', 'Set Origin', '# confirm "Set ORIGIN?" map setoriginpos '))
-        self.add_menu(MPMenuItem('Set Origin (with height)', 'Set Origin', '# confirm "Set ORIGIN with height?" map setorigin '))
+                                 handler=MPMenuCallTextDialog(title='Altitude (FLYTOFRAMEUNITS)', default=self.mpstate.settings.guidedalt,
+                                                              settings=self.settings)))
         self.add_menu(MPMenuItem('Terrain Check', 'Terrain Check', '# terrain check'))
         self.add_menu(MPMenuItem('Show Position', 'Show Position', 'showPosition'))
         self.add_menu(MPMenuItem('Google Maps Link', 'Google Maps Link', 'printGoogleMapsLink'))
         self.add_menu(MPMenuItem('Set ROI', 'Set ROI', '# map setroi '))
         self.add_menu(MPMenuItem('Set Position', 'Set Position', '# map setposition '))
+        self.add_menu(MPMenuSubMenu('Home', items=[
+            MPMenuItem('Set Home', 'Set Home', '# confirm "Set HOME?" map sethomepos '),
+            MPMenuItem('Set Home (with height)', 'Set Home', '# confirm "Set HOME with height?" map sethome '),
+            MPMenuItem('Set Origin', 'Set Origin', '# confirm "Set ORIGIN?" map setoriginpos '),
+            MPMenuItem('Set Origin (with height)', 'Set Origin', '# confirm "Set ORIGIN with height?" map setorigin '),
+        ]))
+
+        self.cmd_menu_add(["Marker:Flag", "map", "marker", "flag"])
+        self.cmd_menu_add(["Marker:Barrell", "map", "marker", "barrell"])
+        self.cmd_menu_add(["Marker:Flame", "map", "marker", "flame"])
 
         self._colour_for_wp_command = {
             # takeoff commands
@@ -134,6 +145,25 @@ class MapModule(mp_module.MPModule):
         self.default_popup.add(menu)
         self.map.add_object(mp_slipmap.SlipDefaultPopup(self.default_popup, combine=True))
 
+    def cmd_menu_add(self, args):
+        '''add to map menus'''
+        if len(args) < 2:
+            print("Usage: map menu add MenuPath command")
+            return
+        menupath = args[0].strip('"').split(':')
+        name = menupath[-1]
+        cmd = '# ' + ' '.join(args[1:])
+        self.default_popup.add_to_submenu(menupath[:-1], MPMenuItem(name, name, cmd))
+        self.map.add_object(mp_slipmap.SlipDefaultPopup(self.default_popup, combine=True))
+
+    def cmd_menu(self, args):
+        '''control console menus'''
+        if len(args) < 2:
+            print("Usage: map menu <add>")
+            return
+        if args[0] == 'add':
+            self.cmd_menu_add(args[1:])
+        
     def remove_menu(self, menu):
         '''add to the default popup menu'''
         from MAVProxy.modules.mavproxy_map import mp_slipmap
@@ -160,11 +190,91 @@ class MapModule(mp_module.MPModule):
         pos = self.mpstate.click_location
         print("https://www.google.com/maps/search/?api=1&query=%f,%f" % (pos[0], pos[1]))
 
+
+    def write_JSON(self, fname, template, vardict):
+        '''write a JSON file in log directory'''
+        fname = os.path.join(self.logdir, fname)
+        json = template
+        for k in vardict.keys():
+            value = vardict[k]
+            json = json.replace("{{" + k + "}}", str(value))
+        open(fname, 'w').write(json)
+
+    def cmd_map_marker(self, args, latlon=None):
+        '''add a map marker'''
+        usage = "Usage: map marker <icon>"
+        if latlon is None:
+            latlon = self.mpstate.click_location
+        if latlon is None:
+            print("Need click position for marker")
+            return
+        (lat, lon) = latlon
+        marker = 'flag'
+        text = ''
+        if len(args) > 0:
+            marker = args[0]
+
+        if len(args) > 1:
+            text = ' '.join(args[1:])
+        flag = marker + '.png'
+
+        icon = self.map.icon(flag)
+        self.map.add_object(mp_slipmap.SlipIcon(
+            'icon - %s [%u]' % (str(flag),self.icon_counter),
+            (float(lat),float(lon)),
+            icon, layer=3, rotation=0, follow=False))
+        self.icon_counter += 1
+        now = time.time()
+        tstr = datetime.datetime.fromtimestamp(now).strftime("%Y_%m_%d_%H_%M_%S")
+        subsec = now - math.floor(now)
+        millis = int(subsec * 1000)
+        fname = "marker_%s_%03u.json" % (tstr, millis)
+
+        gpi = self.master.messages.get('GLOBAL_POSITION_INT',None)
+        att = self.master.messages.get('ATTITUDE',None)
+
+        self.write_JSON(fname,'''{
+"marker" : {{MARKER}},
+"text" : "{{TEXT}}",
+"tsec" : {{TIMESEC}},
+"mlat" : {{LAT}},
+"mlon" : {{LON}},
+"vlat" : {{VLAT}},
+"vlon" : {{VLON}},
+"valt" : {{VALT}},
+"gspeed" : {{GSPEED}},
+"ghead" : {{GHEAD}},
+"roll" : {{ROLL}},
+"pitch" : {{PITCH}},
+"yaw" : {{YAW}},
+}
+''', {
+    "TIMESEC" : now,
+    "MARKER" : marker,
+    "TEXT" : text,
+    "LAT" : lat,
+    "LON" : lon,
+    "VLAT" : "%.9f" % (gpi.lat*1.0e-7),
+    "VLON" : "%.9f" % (gpi.lon*1.0e-7),
+    "VALT" : gpi.alt*1.0e-3,
+    "GSPEED" : math.sqrt(gpi.vx**2+gpi.vy**2)*0.01,
+    "GHEAD" : gpi.hdg*0.01,
+    "ROLL" : math.degrees(att.roll),
+    "PITCH" : math.degrees(att.pitch),
+    "YAW" : math.degrees(att.yaw)
+    })
+
+        print("Wrote marker %s" % fname)
+
+            
+        
     def cmd_map(self, args):
         '''map commands'''
         from MAVProxy.modules.mavproxy_map import mp_slipmap
         if len(args) < 1:
-            print("usage: map <icon|set>")
+            print("usage: map <icon|set|menu|marker>")
+        elif args[0] == "menu":
+            self.cmd_menu(args[1:])
         elif args[0] == "icon":
             usage = "Usage: map icon <lat> <lon> <icon>"
             flag = 'flag.png'
@@ -191,6 +301,8 @@ class MapModule(mp_module.MPModule):
                 icon, layer=3, rotation=0, follow=False))
             self.icon_counter += 1
 
+        elif args[0] == "marker":
+            self.cmd_map_marker(args[1:])
         elif args[0] == "vehicletype":
             if len(args) < 3:
                 print("Usage: map vehicletype SYSID TYPE")
@@ -200,34 +312,7 @@ class MapModule(mp_module.MPModule):
                 self.vehicle_type_override[sysid] = vtype
                 print("Set sysid %u to vehicle type %u" % (sysid, vtype))
         elif args[0] == "circle":
-            if len(args) < 4:
-                # map circle -27.70533373 153.23404844 5 red
-                print("Usage: map circle <lat> <lon> <radius> <colour>")
-            else:
-                lat = args[1]
-                lon = args[2]
-                radius = args[3]
-                colour = 'red'
-                if len(args) > 4:
-                    colour = args[4]
-                if colour == "red":
-                    colour = (255,0,0)
-                elif colour == "green":
-                    colour = (0,255,0)
-                elif colour == "blue":
-                    colour = (0,0,255)
-                else:
-                    colour = eval(colour)
-                circle = mp_slipmap.SlipCircle(
-                    "circle %u" % self.circle_counter,
-                    3,
-                    (float(lat), float(lon)),
-                    float(radius),
-                    colour,
-                    linewidth=1,
-                )
-                self.map.add_object(circle)
-                self.circle_counter += 1
+            self.cmd_map_circle(args[1:])
         elif args[0] == "set":
             self.map_settings.command(args[1:])
             self.map.add_object(mp_slipmap.SlipBrightness(self.map_settings.brightness))
@@ -253,6 +338,64 @@ class MapModule(mp_module.MPModule):
             self.cmd_set_position(args)
         else:
             print("usage: map <icon|set>")
+
+    def cmd_map_circle(self, args):
+        usage = '''
+Usage: map circle <lat> <lon> <radius> <colour>
+Usage: map circle <radius> <colour>
+        '''
+
+        lat = None
+        colour = None
+        # syntax 1, lat/lon/radius/colour
+        if len(args) == 4:
+            colour = args[3]
+            args = args[0:3]
+        if len(args) == 3:
+            lat = args[0]
+            lon = args[1]
+            radius = args[2]
+
+        # syntax 2, radius/colour, uses click position
+        if len(args) == 2:
+            colour = args[1]
+            args = args[0:1]
+        if len(args) == 1:
+            pos = self.mpstate.click_location
+            if pos is None:
+                print("Need click or location")
+                print(usage)
+                return
+
+            (lat, lon) = pos
+            radius = args[0]
+
+        if lat is None:
+            print(usage)
+            return
+
+        if colour is None:
+            colour = "red"
+
+        if colour == "red":
+            colour = (255,0,0)
+        elif colour == "green":
+            colour = (0,255,0)
+        elif colour == "blue":
+            colour = (0,0,255)
+        else:
+            colour = eval(colour)
+
+        circle = mp_slipmap.SlipCircle(
+            "circle %u" % self.circle_counter,
+            3,
+            (float(lat), float(lon)),
+            float(radius),
+            colour,
+            linewidth=self.map_settings.circle_linewidth,
+        )
+        self.map.add_object(circle)
+        self.circle_counter += 1
 
     def colour_for_wp(self, wp_num):
         '''return a tuple describing the colour a waypoint should appear on the map'''
@@ -735,6 +878,9 @@ class MapModule(mp_module.MPModule):
             self.last_unload_check_time = now
             if not self.map.is_alive():
                 self.needs_unloading = True
+
+        # check for any events from the map
+        self.map.check_events()
 
     def create_vehicle_icon(self, name, colour, follow=False, vehicle_type=None):
         '''add a vehicle to the map'''

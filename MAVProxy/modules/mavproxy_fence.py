@@ -225,10 +225,20 @@ class FenceModule(mission_item_protocol.MissionItemProtocolModule):
             self.handle_sys_status(m)
         super(FenceModule, self).mavlink_packet(m)
 
+    def apply_function_to_points(self, function):
+        if not self.check_have_list():
+            return
+        for i in range(self.wploader.count()):
+            function(i, self.wploader.item(i))
+
     def fence_draw_callback(self, points):
         '''callback from drawing a fence'''
+
+        self.add_polyfence(self.drawing_fence_type, points)
+
+    def add_polyfence(self, fence_type, points):
         if len(points) < 3:
-            print("Fence draw cancelled")
+            print("Too few points")
             return
         items = []
         for p in points:
@@ -237,7 +247,7 @@ class FenceModule(mission_item_protocol.MissionItemProtocolModule):
                 self.target_component,
                 0,    # seq
                 mavutil.mavlink.MAV_FRAME_GLOBAL,    # frame
-                self.drawing_fence_type,    # command
+                fence_type,    # command
                 0,    # current
                 0,    # autocontinue
                 len(points), # param1,
@@ -252,6 +262,9 @@ class FenceModule(mission_item_protocol.MissionItemProtocolModule):
             items.append(m)
 
         self.append(items)
+        self.push_to_vehicle()
+
+    def push_to_vehicle(self):
         self.send_all_items()
         self.wploader.last_change = time.time()
 
